@@ -1,14 +1,14 @@
 name: GLaDOS Daily Checkin
-
 on:
   schedule:
     # 每天北京时间 0:05 触发（UTC 16:05）
     - cron: '25 16 * * *'
   workflow_dispatch:   # 支持手动触发
-
 jobs:
   checkin:
     runs-on: ubuntu-latest
+    outputs:
+      log_content: ${{ steps.run_checkin.outputs.log }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -18,30 +18,35 @@ jobs:
       - name: Install dependencies
         run: pip install requests
       - name: Run checkin
+        id: run_checkin
         env:
-          # 方式一：一个 secret 搞定（推荐，格式见 README）
           GLADOS_CONFIG: ${{ secrets.GLADOS_CONFIG }}
-          # 方式二：拆分的 secrets（GLADOS_CONFIG 里没写的项会从这里兜底）
           GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
           GLADOS_EXCHANGE_PLAN: ${{ secrets.GLADOS_EXCHANGE_PLAN }}
-          # 发信：SMTP（推荐，普通邮箱授权码）
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          MAIL_USER: ${{ secrets.MAIL_USER }}
-          MAIL_PASS: ${{ secrets.MAIL_PASS }}
-          # 发信：Resend（可选，未验证域名时只能发给自己注册用的邮箱）
-          MAIL_PROVIDER: ${{ secrets.MAIL_PROVIDER }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          MAIL_FROM: ${{ secrets.MAIL_FROM }}
-          # 收件人
-          MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python GLaDOS_Checkin.py
-
+        run: |
+          set +e
+          LOG=$(python GLaDOS_Checkin.py 2>&1)
+          echo "$LOG"
+          echo "log<<EOF" >> $GITHUB_OUTPUT
+          echo "$LOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Send DingTalk notify
+        env:
+          DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
+        if: env.DING_WEBHOOK != ''
+        run: |
+          curl -s -X POST "${DING_WEBHOOK}" \
+          -H "Content-Type:application/json" \
+          -d '{
+            "msgtype": "text",
+            "text": {
+              "content": "# GLaDOS签到任务\n${{ steps.run_checkin.outputs.log }}"
+            }
+          }'
   keepalive:
     runs-on: ubuntu-latest
-    needs: checkin   # 可选：等签到完成后再执行保活，避免任务失败
-    # 签到/发信失败时也照常保活，避免仓库被判定为不活跃
+    needs: checkin   # 等签到完成后再执行保活
     if: always()
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +57,7 @@ jobs:
         run: |
           # 获取当前北京时间的日期（UTC+8）
           DAY=$(TZ='Asia/Shanghai' date +%d)
-          if [[ "$DAY" == "08" || "$DAY" == "18" || "$DAY" == "26" ]]; then
+          if [[ "$DAY" == "08" || "$DAY" == "18" || "$DAY" == "28" ]]; then
             echo "should_run=true" >> $GITHUB_OUTPUT
           else
             echo "should_run=false" >> $GITHUB_OUTPUT
@@ -67,5 +72,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add keepalive.txt
-          git diff --quiet && git diff --staged --quiet || git commit -m "chore: keepalive on $(date +%Y%m%d)"
+          git diff --quiet && git diff --staged --quiet || git commit -m "chore: keepalive on $(TZ='Asia/Shanghai' date +%Y%m%d)"
           git push
